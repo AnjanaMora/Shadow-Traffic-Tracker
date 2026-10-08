@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shadow-traffic.dev/schemas/metric_event.json",
+  "title": "MetricEvent",
+  "description": "Canonical telemetry metric event for website traffic congestion prediction.",
+  "type": "object",
+  "properties": {
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier for the monitored website or application service"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp in UTC when the metric snapshot was captured"
+    },
+    "active_users": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of concurrent active users / sessions during the snapshot interval"
+    },
+    "request_rate": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Requests per second (RPS) received during the interval"
+    },
+    "avg_response_time_ms": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Average response time (latency) in milliseconds"
+    },
+    "error_rate_percent": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 100.0,
+      "description": "Percentage of requests resulting in 4xx/5xx HTTP errors (0.0 to 100.0)"
+    }
+  },
+  "required": [
+    "site_id",
+    "timestamp",
+    "active_users",
+    "request_rate",
+    "avg_response_time_ms",
+    "error_rate_percent"
+  ],
+  "additionalProperties": false
+}

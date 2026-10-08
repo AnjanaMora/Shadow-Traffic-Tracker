@@ -1,0 +1,234 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ===========================================================================
+  # 1. Automated Test Suite Across All Monorepo Services
+  # ===========================================================================
+  test-shared:
+    name: Test / Shared Models & Logging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e shared/python
+          pip install pytest jsonschema pydantic
+
+      - name: Run shared tests
+        run: |
+          pytest shared/python/tests
+
+  test-collector:
+    name: Test / Telemetry Collector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e shared/python
+          pip install -r collector/requirements.txt
+          pip install pytest flake8
+
+      - name: Lint collector source
+        run: |
+          flake8 collector/src --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run collector tests
+        run: |
+          pytest collector/tests
+
+  test-prediction-engine:
+    name: Test / Prediction Engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e shared/python
+          pip install -r prediction-engine/requirements.txt
+          pip install pytest flake8
+
+      - name: Lint prediction engine source
+        run: |
+          flake8 prediction-engine/src --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run prediction engine tests
+        run: |
+          pytest prediction-engine/tests
+
+  test-backend:
+    name: Test / Backend Gateway & Storage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e shared/python
+          pip install -r backend/requirements.txt
+          pip install pytest flake8
+
+      - name: Lint backend source
+        run: |
+          flake8 backend/src --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run backend tests
+        run: |
+          pytest backend/tests
+
+  test-dashboard:
+    name: Test / React Operations Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: ./dashboard
+        run: |
+          npm ci || npm install
+
+      - name: Run dashboard unit tests
+        working-directory: ./dashboard
+        run: |
+          npm test
+
+      - name: Verify production build
+        working-directory: ./dashboard
+        run: |
+          npm run build
+
+  test-e2e-benchmarks:
+    name: Test / E2E Proactive Benchmarks
+    runs-on: ubuntu-latest
+    needs: [test-shared, test-collector, test-prediction-engine, test-backend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install full monorepo dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e shared/python
+          pip install -r backend/requirements.txt
+          pip install -r prediction-engine/requirements.txt
+          pip install -r collector/requirements.txt
+          pip install pytest httpx
+
+      - name: Run Proactive Lead Time & False Alarm Tests
+        run: |
+          python tests/e2e/run_demo_benchmark.py
+
+  validate-docker-compose:
+    name: Validate / Docker Compose Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Compose files
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          docker compose -f docker-compose.prod.yml config --quiet
+
+  # ===========================================================================
+  # 2. Build & Push Multi-Stage Container Images
+  # ===========================================================================
+  build-and-push-images:
+    name: Docker / Build & Push (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [test-dashboard, test-e2e-benchmarks, validate-docker-compose]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            dockerfile: backend/Dockerfile
+            image_name: shadow-backend
+          - service: prediction-engine
+            dockerfile: prediction-engine/Dockerfile
+            image_name: shadow-prediction-engine
+          - service: collector
+            dockerfile: collector/Dockerfile
+            image_name: shadow-collector
+          - service: dashboard
+            dockerfile: dashboard/Dockerfile
+            image_name: shadow-dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Docker Metadata & Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,prefix=sha-
+
+      - name: Build and (optionally) Push Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

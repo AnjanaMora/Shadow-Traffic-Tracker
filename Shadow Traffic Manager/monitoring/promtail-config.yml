@@ -1,0 +1,58 @@
+# =============================================================================
+# Promtail Configuration for Shadow Traffic Production Log Aggregation
+# =============================================================================
+# Scrapes Docker container JSON logs and extracts structured fields into Loki labels.
+# =============================================================================
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker-containers
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: shadow-traffic
+          __path__: /var/lib/docker/containers/*/*-json.log
+
+    pipeline_stages:
+      # Step 1: Decode standard Docker daemon JSON wrapping
+      - json:
+          expressions:
+            log: log
+            stream: stream
+            docker_time: time
+
+      # Step 2: Parse inner application JSON log format (emitted by shadow_shared.logging)
+      - json:
+          source: log
+          expressions:
+            timestamp: timestamp
+            level: level
+            service: service
+            logger: logger
+            site_id: site_id
+            message: message
+
+      # Step 3: Promote key metadata to indexable Loki labels
+      - labels:
+          service:
+          level:
+          site_id:
+
+      # Step 4: Map original timestamp from application log
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+
+      # Step 5: Replace raw output with clean message payload
+      - output:
+          source: message

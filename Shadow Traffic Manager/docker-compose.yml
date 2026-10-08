@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # TimescaleDB: Time-series optimized PostgreSQL instance
+  # ---------------------------------------------------------------------------
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: shadow-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-shadow_traffic}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./backend/src/storage/migrations/001_timescale_schema.sql:/docker-entrypoint-initdb.d/001_timescale_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-shadow_traffic}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shadow-net
+
+  # ---------------------------------------------------------------------------
+  # Prediction Engine: Statistical + ML congestion forecasting microservice
+  # ---------------------------------------------------------------------------
+  prediction-engine:
+    build:
+      context: .
+      dockerfile: prediction-engine/Dockerfile
+    container_name: shadow-prediction-engine
+    restart: unless-stopped
+    environment:
+      PORT: 8001
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      EWMA_ALPHA: ${EWMA_ALPHA:-0.35}
+      FORECAST_HORIZON_SECONDS: ${FORECAST_HORIZON_SECONDS:-300}
+      LATENCY_THRESHOLD_MS: ${LATENCY_THRESHOLD_MS:-300.0}
+      ERROR_RATE_THRESHOLD_PERCENT: ${ERROR_RATE_THRESHOLD_PERCENT:-5.0}
+    ports:
+      - "${PREDICTION_PORT:-8001}:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - shadow-net
+
+  # ---------------------------------------------------------------------------
+  # Backend API Gateway: Telemetry ingestion, TimescaleDB writer, Alerting
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: shadow-backend
+    restart: unless-stopped
+    environment:
+      PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@timescaledb:5432/${POSTGRES_DB:-shadow_traffic}
+      PREDICTION_ENGINE_URL: http://prediction-engine:8001
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_COOLDOWN_SECONDS: ${ALERT_COOLDOWN_SECONDS:-60}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      prediction-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shadow-net
+
+  # ---------------------------------------------------------------------------
+  # React Dashboard: Telemetry telemetry UI & alert monitor
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: shadow-dashboard
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - shadow-net
+
+  # ---------------------------------------------------------------------------
+  # Metric Collector Agent: Continuous telemetry simulation & collection
+  # ---------------------------------------------------------------------------
+  collector:
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    container_name: shadow-collector
+    restart: unless-stopped
+    environment:
+      BACKEND_API_URL: http://backend:8000
+      SITE_ID: ${SITE_ID:-shadow-ecommerce-prod}
+      REPORT_INTERVAL_SECONDS: ${REPORT_INTERVAL_SECONDS:-3.0}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - shadow-net
+
+networks:
+  shadow-net:
+    driver: bridge
+
+volumes:
+  timescaledb_data:
+    driver: local

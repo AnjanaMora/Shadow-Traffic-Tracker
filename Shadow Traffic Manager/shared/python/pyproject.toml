@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shadow-shared"
+version = "0.1.0"
+description = "Canonical data models and contracts for Shadow Traffic"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "jsonschema>=4.20.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shadow_shared*"]

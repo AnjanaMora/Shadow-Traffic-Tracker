@@ -1,0 +1,97 @@
+# =============================================================================
+# Shadow Traffic — Observability & Centralized Logging Stack (Loki + Grafana)
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.prod.yml -f monitoring/docker-compose.monitoring.yml up -d
+# Access:
+#   Grafana UI: http://<vps-ip>:3001 (Default credentials: admin / admin)
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # Loki: High-Efficiency Log Aggregation Engine
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: shadow-loki
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 512M
+        reservations:
+          cpus: '0.20'
+          memory: 128M
+    networks:
+      - shadow-net
+
+  # ---------------------------------------------------------------------------
+  # Promtail: Daemon Scraping Docker Container JSON Logs
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: shadow-promtail
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+        reservations:
+          cpus: '0.10'
+          memory: 64M
+    depends_on:
+      - loki
+    networks:
+      - shadow-net
+
+  # ---------------------------------------------------------------------------
+  # Grafana: Metrics & Log Dashboards
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: shadow-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 512M
+        reservations:
+          cpus: '0.20'
+          memory: 128M
+    depends_on:
+      - loki
+    networks:
+      - shadow-net
+
+volumes:
+  loki_data:
+    name: shadow-loki-data
+  grafana_data:
+    name: shadow-grafana-data
+
+networks:
+  shadow-net:
+    external: true
